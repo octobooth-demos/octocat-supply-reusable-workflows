@@ -1,0 +1,108 @@
+name: 📦 Update Virtual Registry
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: 'Package name for the artifact'
+        required: true
+        type: string
+      image:
+        description: 'Container image reference (e.g. ghcr.io/org/image:tag)'
+        required: true
+        type: string
+      digest:
+        description: 'Container digest (sha256:...)'
+        required: true
+        type: string
+      hostname:
+        description: 'GitHub API hostname (e.g. github.example.com)'
+        required: true
+        type: string
+      artifact_url:
+        description: 'URL to the artifact package (e.g. https://github.com/org/repo/pkgs/container/name)'
+        required: true
+        type: string
+      registry_url:
+        description: 'Container registry URL (e.g. https://ghcr.io/org)'
+        required: true
+        type: string
+      app_name:
+        description: 'Deployed container app name'
+        required: true
+        type: string
+      location:
+        description: 'Azure region where the app is deployed'
+        required: true
+        type: string
+      resource_group:
+        description: 'Azure resource group name'
+        required: true
+        type: string
+      runtime_risks:
+        description: 'Comma-separated list of runtime risks (e.g. internet-exposed,sensitive-data)'
+        required: true
+        type: string
+
+jobs:
+  update-registry:
+    name: Update Virtual Registry
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      artifact-metadata: write
+
+    steps:
+      - name: Create Storage Record
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "📦 Creating storage record for ${{ inputs.artifact_name }}"
+
+          # Extract version (tag) from image reference
+          VERSION=$(echo "${{ inputs.image }}" | sed 's/.*://')
+
+          gh api \
+            --hostname ${{ inputs.hostname }} \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /orgs/${{ github.repository_owner }}/artifacts/metadata/storage-record \
+            -f "name=${{ inputs.artifact_name }}" \
+            -f "version=${VERSION}" \
+            -f "digest=${{ inputs.digest }}" \
+            -f "artifact_url=${{ inputs.artifact_url }}" \
+            -f "registry_url=${{ inputs.registry_url }}" \
+            -f "status=active"
+          echo "✅ Storage record created"
+
+      - name: Create Deployment Record
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "📝 Creating deployment record for ${{ inputs.artifact_name }}"
+
+          # Build runtime_risks flags from comma-separated input
+          RISK_FLAGS=""
+          IFS=',' read -ra RISKS <<< "${{ inputs.runtime_risks }}"
+          for risk in "${RISKS[@]}"; do
+            RISK_FLAGS="${RISK_FLAGS} -f runtime_risks[]=${risk}"
+          done
+
+          gh api \
+            --hostname ${{ inputs.hostname }} \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            /orgs/${{ github.repository_owner }}/artifacts/metadata/deployment-record \
+            -f "name=${{ inputs.artifact_name }}" \
+            -f "digest=${{ inputs.digest }}" \
+            -f "status=deployed" \
+            -f "logical_environment=production" \
+            -f "physical_environment=${{ inputs.location }}" \
+            -f "cluster=Container App Services" \
+            -f "deployment_name=${{ inputs.app_name }}" \
+            ${RISK_FLAGS} \
+            -f "tags[azure-rg]=${{ inputs.resource_group }}"
+          echo "✅ Deployment record created"
